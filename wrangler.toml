@@ -3,5 +3,5 @@ main = "cf_worker.js"
 compatibility_date = "2024-03-04"
 
 [vars]
-# Add any environment variables here if needed
-# ALLOWED_ORIGINS = "*"
+DEFAULT_REFERER = "https://megacloud.blog"
+DEFAULT_ORIGIN = "https://hianime.to"

@@ -38,11 +38,21 @@ const isOriginAllowed = (origin, options) => {
   return true;
 };
 
+const DEFAULT_HEADERS = {
+  "Referer": typeof DEFAULT_REFERER !== "undefined" ? DEFAULT_REFERER : "https://megacloud.blog",
+  "Origin": typeof DEFAULT_ORIGIN !== "undefined" ? DEFAULT_ORIGIN : "https://hianime.to"
+};
+
 async function handleM3U8Proxy(request) {
   const { searchParams } = new URL(request.url);
   const targetUrl = searchParams.get("url");
   const headers = JSON.parse(searchParams.get("headers") || "{}");
   const origin = request.headers.get("Origin") || "";
+
+  const finalHeaders = {
+    ...DEFAULT_HEADERS,
+    ...headers
+  };
 
   if (!isOriginAllowed(origin, options)) {
     return new Response(`The origin "${origin}" is not allowed.`, {
@@ -54,7 +64,7 @@ async function handleM3U8Proxy(request) {
   }
 
   try {
-    const response = await fetch(targetUrl, { headers });
+    const response = await fetch(targetUrl, { headers: finalHeaders });
     if (!response.ok) {
       return new Response("Failed to fetch the m3u8 file", {
         status: response.status,
@@ -87,7 +97,7 @@ async function handleM3U8Proxy(request) {
         newLines.push(
           `/ts-proxy?url=${encodeURIComponent(
             uri.href
-          )}&headers=${encodeURIComponent(JSON.stringify(headers))}`
+          )}&headers=${encodeURIComponent(JSON.stringify(finalHeaders))}`
         );
       }
     });
@@ -111,6 +121,11 @@ async function handleTsProxy(request) {
   const headers = JSON.parse(searchParams.get("headers") || "{}");
   const origin = request.headers.get("Origin") || "";
 
+  const finalHeaders = {
+    ...DEFAULT_HEADERS,
+    ...headers
+  };
+
   if (!isOriginAllowed(origin, options)) {
     return new Response(`The origin "${origin}" is not allowed.`, {
       status: 403,
@@ -126,7 +141,7 @@ async function handleTsProxy(request) {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36",
-        ...headers,
+        ...finalHeaders,
       },
     });
 
