@@ -13,6 +13,9 @@ export default {
 };
 
 const isOriginAllowed = (origin, env) => {
+  // If no origin is provided, allow it (common for some players/direct access)
+  if (!origin) return true;
+
   const allowedOrigins = (env.ALLOWED_ORIGINS || "*").split(",").map(o => o.trim());
   if (allowedOrigins.includes("*")) return true;
   return allowedOrigins.includes(origin);
@@ -24,36 +27,25 @@ async function handleM3U8Proxy(request, env) {
   const headers = JSON.parse(searchParams.get("headers") || "{}");
   const origin = request.headers.get("Origin") || "";
 
-  const defaultHeaders = {
-    "Referer": env.DEFAULT_REFERER || "https://megacloud.blog",
-    "Origin": env.DEFAULT_ORIGIN || "https://hianime.to",
-    "User-Agent": request.headers.get("User-Agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-  };
-
-  const finalHeaders = {
-    ...defaultHeaders,
-    ...headers
-  };
-
   if (!isOriginAllowed(origin, env)) {
-    return new Response(`The origin "${origin}" is not allowed.`, {
+    return new Response(`Origin "${origin}" not allowed`, {
       status: 403,
       headers: { "Access-Control-Allow-Origin": "*" }
     });
   }
 
-  if (!targetUrl) {
-    return new Response("URL is required", { status: 400 });
-  }
+  if (!targetUrl) return new Response("URL required", { status: 400 });
+
+  const finalHeaders = {
+    "Referer": env.DEFAULT_REFERER || "https://megacloud.blog",
+    "Origin": env.DEFAULT_ORIGIN || "https://hianime.to",
+    "User-Agent": request.headers.get("User-Agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    ...headers
+  };
 
   try {
     const response = await fetch(targetUrl, { headers: finalHeaders });
-    if (!response.ok) {
-      return new Response("Failed to fetch the m3u8 file", {
-        status: response.status,
-        headers: { "Access-Control-Allow-Origin": "*" }
-      });
-    }
+    if (!response.ok) return new Response("Fetch failed", { status: response.status, headers: { "Access-Control-Allow-Origin": "*" } });
 
     let m3u8 = await response.text();
     const lines = m3u8.split("\n");
@@ -61,6 +53,9 @@ async function handleM3U8Proxy(request, env) {
 
     const urlObj = new URL(request.url);
     const workerUrl = `${urlObj.protocol}//${urlObj.host}`;
+
+    // Check if this is a Master Playlist (contains stream info)
+    const isMaster = m3u8.includes("#EXT-X-STREAM-INF");
 
     for (let line of lines) {
       line = line.trim();
@@ -72,8 +67,12 @@ async function handleM3U8Proxy(request, env) {
           if (uriMatch) {
             const originalUri = uriMatch[1];
             const absoluteUri = new URL(originalUri, targetUrl).href;
-            const proxyPath = line.includes("TYPE=AUDIO") || line.includes("TYPE=SUBTITLES") ? "/m3u8-proxy" : "/ts-proxy";
-            const newUrl = `${workerUrl}${proxyPath}?url=${encodeURIComponent(absoluteUri)}&headers=${encodeURIComponent(JSON.stringify(finalHeaders))}`;
+
+            // EXT-X-MEDIA for audio/subs are often M3U8s, while KEYs are usually fragments
+            const isMediaPlaylist = line.includes("TYPE=AUDIO") || line.includes("TYPE=SUBTITLES") || originalUri.includes(".m3u8");
+            const proxyPath = isMediaPlaylist ? "/m3u8-proxy" : "/ts-proxy";
+
+            const newUrl = `${workerUrl}${proxyPath}?url=${encodeURIComponent(absoluteUri)}&headers=${encodeURIComponent(JSON.stringify(headers))}`;
             newLines.push(line.replace(originalUri, newUrl));
           } else {
             newLines.push(line);
@@ -83,7 +82,11 @@ async function handleM3U8Proxy(request, env) {
         }
       } else {
         const absoluteUri = new URL(line, targetUrl).href;
-        newLines.push(`${workerUrl}/ts-proxy?url=${encodeURIComponent(absoluteUri)}&headers=${encodeURIComponent(JSON.stringify(finalHeaders))}`);
+        // In Master Playlists, lines are variant playlists. In Media Playlists, they are segments.
+        const isM3U8 = line.includes(".m3u8") || isMaster;
+        const proxyPath = isM3U8 ? "/m3u8-proxy" : "/ts-proxy";
+
+        newLines.push(`${workerUrl}${proxyPath}?url=${encodeURIComponent(absoluteUri)}&headers=${encodeURIComponent(JSON.stringify(headers))}`);
       }
     }
 
@@ -95,8 +98,8 @@ async function handleM3U8Proxy(request, env) {
         "Access-Control-Allow-Methods": "*",
       },
     });
-  } catch (error) {
-    return new Response(error.message, { status: 500, headers: { "Access-Control-Allow-Origin": "*" } });
+  } catch (e) {
+    return new Response(e.message, { status: 500, headers: { "Access-Control-Allow-Origin": "*" } });
   }
 }
 
@@ -107,22 +110,21 @@ async function handleTsProxy(request, env) {
   const origin = request.headers.get("Origin") || "";
 
   if (!isOriginAllowed(origin, env)) {
-    return new Response(`The origin "${origin}" is not allowed.`, {
+    return new Response(`Origin "${origin}" not allowed`, {
       status: 403,
       headers: { "Access-Control-Allow-Origin": "*" }
     });
   }
 
-  if (!targetUrl) {
-    return new Response("URL is required", { status: 400 });
-  }
+  if (!targetUrl) return new Response("URL required", { status: 400 });
 
   const forwardHeaders = new Headers({
     "User-Agent": request.headers.get("User-Agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Referer": env.DEFAULT_REFERER || "https://megacloud.blog",
+    "Origin": env.DEFAULT_ORIGIN || "https://hianime.to",
     ...headers
   });
 
-  // Forward Range header if present
   if (request.headers.has("Range")) {
     forwardHeaders.set("Range", request.headers.get("Range"));
   }
@@ -140,30 +142,20 @@ async function handleTsProxy(request, env) {
       "Cache-Control": "public, max-age=3600"
     });
 
-    // Forward essential response headers
-    const headersToForward = [
-      "Content-Type",
-      "Content-Length",
-      "Content-Range",
-      "Accept-Ranges",
-    ];
-
-    headersToForward.forEach(header => {
-      if (response.headers.has(header)) {
-        responseHeaders.set(header, response.headers.get(header));
-      }
+    const headersToForward = ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"];
+    headersToForward.forEach(h => {
+      if (response.headers.has(h)) responseHeaders.set(h, response.headers.get(h));
     });
 
-    // Ensure a representative content-type if missing
     if (!responseHeaders.has("Content-Type")) {
-      responseHeaders.set("Content-Type", "video/mp2t");
+      responseHeaders.set("Content-Type", targetUrl.includes(".m4s") ? "video/iso.segment" : "video/mp2t");
     }
 
     return new Response(response.body, {
       status: response.status,
       headers: responseHeaders,
     });
-  } catch (error) {
-    return new Response(error.message, { status: 500, headers: { "Access-Control-Allow-Origin": "*" } });
+  } catch (e) {
+    return new Response(e.message, { status: 500, headers: { "Access-Control-Allow-Origin": "*" } });
   }
 }
